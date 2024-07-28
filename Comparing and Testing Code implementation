@@ -1,0 +1,278 @@
+import random
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import numpy as np
+import networkx as nx
+import matplotlib.pyplot as plt
+from scipy.stats import t
+import time
+import itertools
+import pandas as pd
+import unittest
+
+
+
+def plot_graph(graph, coloring):
+    G = nx.Graph()
+    num_vertices = len(graph)
+    G.add_nodes_from(range(num_vertices))
+    edges = [(i, j) for i in range(num_vertices) for j in range(i + 1, num_vertices) if graph[i][j] == 1]
+    G.add_edges_from(edges)
+
+    colors = [coloring[i] for i in G.nodes()]
+    pos = nx.spring_layout(G)  # Positioning for a better visual representation
+    nx.draw(G, pos, node_color=colors, with_labels=True, cmap=plt.cm.rainbow, node_size=500)
+    plt.show()
+
+
+def run_single_test(num_vertices, num_edges, num_colors):
+    graph = create_random_graph(num_vertices, num_edges)
+    start_time = time.time()
+    num_colors_used = genetic_algorithm(graph, num_colors)
+    end_time = time.time()
+    return end_time - start_time, num_colors_used
+
+
+# Experimental Analysis Function
+def performance_testing():
+    input_sizes = range(5, 30)
+    k = 5
+    num_colors = 4
+    confidence_level = 0.9
+
+    mean_times = []
+    standard_errors = []
+
+    for size in input_sizes:
+        times = []
+        num_edges = size * (size - 1) // 6  # Adjust number of edges as needed
+
+        with ProcessPoolExecutor() as executor:
+            futures = [executor.submit(run_single_test, size, num_edges, num_colors) for _ in range(k)]
+            for future in as_completed(futures):
+                times.append(future.result()[0])  # only store time
+
+        mean_time = np.mean(times)
+        standard_error = np.std(times) / np.sqrt(k)
+        mean_times.append(mean_time)
+        standard_errors.append(standard_error)
+
+    # Calculate t-value for the confidence interval
+    t_value = t.ppf((1 + confidence_level) / 2., k - 1)
+
+    # Check the narrowness of the intervals
+    intervals_narrow = [(mean - standard_error * t_value, mean + standard_error * t_value) for mean, standard_error in
+                        zip(mean_times, standard_errors)]
+    for i, interval in enumerate(intervals_narrow):
+        if (interval[1] - interval[0]) / mean_times[i] >= 0.1:
+            print(f"Interval for input size {input_sizes[i]} is not narrow enough.")
+
+    # Log-Log Plot
+    plt.figure()
+    plt.loglog(input_sizes, mean_times, 'o-', label='Mean Execution Time')
+    plt.xlabel('Input Size (number of vertices)')
+    plt.ylabel('Mean Execution Time (s)')
+    plt.title('Log-Log Plot of Mean Execution Time vs. Input Size')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+    # Linear fit in log-log space
+    log_input_sizes = np.log10(input_sizes)
+    log_mean_times = np.log10(mean_times)
+    coefficients = np.polyfit(log_input_sizes, log_mean_times, 1)
+    fitted_line = np.poly1d(coefficients)
+
+    plt.figure()
+    plt.loglog(input_sizes, mean_times, 'o', label='Mean Execution Time')
+    plt.loglog(input_sizes, 10 ** fitted_line(log_input_sizes), '-',
+               label=f'Fitted Line: y = {coefficients[0]:.2f} * log10(x) + {coefficients[1]:.2f}')
+    plt.xlabel('Input Size (number of vertices)')
+    plt.ylabel('Mean Execution Time (s)')
+    plt.title('Log-Log Plot with Fitted Line')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+    print(f"Equation for the fitted line: y = {coefficients[0]:.2f} * log10(x) + {coefficients[1]:.2f}")
+
+
+def is_valid_coloring(graph, coloring):
+    for u in range(len(graph)):
+        for v in range(len(graph)):
+            if graph[u][v] == 1 and coloring[u] == coloring[v]:
+                return False
+    return True
+
+
+def brute_force_graph_coloring(graph, num_colors):
+    vertices = list(range(len(graph)))
+    for coloring in itertools.product(range(num_colors), repeat=len(vertices)):
+        if is_valid_coloring(graph, coloring):
+            return coloring
+    return None
+
+
+def genetic_algorithm(graph, max_colors, population_size=50, generations=100, mutation_rate=0.1):
+    def fitness(graph, coloring):
+        conflicts = 0
+        for i in range(len(graph)):
+            for j in range(len(graph)):
+                if graph[i][j] == 1 and coloring[i] == coloring[j]:
+                    conflicts += 1
+        return conflicts
+
+    def initialize_population(num_vertices, num_colors, population_size):
+        return [np.random.randint(0, num_colors, num_vertices) for _ in range(population_size)]
+
+    def selection(population, fitnesses):
+        total_fitness = sum(fitnesses)
+        probabilities = [f / total_fitness for f in fitnesses]
+        selected_indices = np.random.choice(len(population), size=len(population), p=probabilities)
+        return [population[i] for i in selected_indices]
+
+    def crossover(parent1, parent2):
+        crossover_point = random.randint(0, len(parent1) - 1)
+        child = np.concatenate((parent1[:crossover_point], parent2[crossover_point:]))
+        return child
+
+    def mutate(coloring, num_colors):
+        mutation_point = random.randint(0, len(coloring) - 1)
+        coloring[mutation_point] = random.randint(0, num_colors - 1)
+
+    num_vertices = len(graph)
+    best_solution = None
+    best_fitness = float('inf')
+
+    for num_colors in range(1, max_colors + 1):
+        population = initialize_population(num_vertices, num_colors, population_size)
+
+        for generation in range(generations):
+            fitnesses = [fitness(graph, individual) for individual in population]
+            best_gen_fitness = min(fitnesses)
+            if best_gen_fitness < best_fitness:
+                best_fitness = best_gen_fitness
+                best_solution = population[fitnesses.index(best_fitness)]
+
+            if best_fitness == 0:  # Found a valid coloring
+                break
+
+            selected_population = selection(population, [1 / (f + 1) for f in fitnesses])
+            new_population = []
+
+            for i in range(0, population_size, 2):
+                parent1 = selected_population[i]
+                parent2 = selected_population[i + 1]
+                child1 = crossover(parent1, parent2)
+                child2 = crossover(parent2, parent1)
+                if random.random() < mutation_rate:
+                    mutate(child1, num_colors)
+                if random.random() < mutation_rate:
+                    mutate(child2, num_colors)
+                new_population.append(child1)
+                new_population.append(child2)
+
+            population = new_population
+
+        if best_fitness == 0:
+            break
+
+    used_colors = len(set(best_solution)) if best_solution is not None else float('inf')
+    return best_solution, used_colors
+
+
+def create_random_graph(num_vertices, num_edges):
+    graph = np.zeros((num_vertices, num_vertices), dtype=int)
+    edges = set()
+    while len(edges) < num_edges:
+        i = random.randint(0, num_vertices - 1)
+        j = random.randint(0, num_vertices - 1)
+        if i != j and (i, j) not in edges and (j, i) not in edges:
+            edges.add((i, j))
+            graph[i][j] = 1
+            graph[j][i] = 1
+    return graph
+
+
+def compare_algorithms(num_vertices, num_edges):
+    graph = create_random_graph(num_vertices, num_edges)
+    max_colors = num_vertices  # Worst case scenario
+
+    # Brute force solution
+    exact_colors = None
+    for num_colors in range(1, max_colors + 1):
+        result = brute_force_graph_coloring(graph, num_colors)
+        if result:
+            exact_colors = num_colors
+            break
+
+    # Genetic algorithm solution
+    _, genetic_colors = genetic_algorithm(graph, max_colors)
+
+    return num_vertices, exact_colors, genetic_colors
+
+
+def Comparison():
+    num_tests = 10
+    max_vertices = 15
+    results = []
+
+    for num_vertices in range(3, max_vertices + 1):
+        num_edges = num_vertices * (num_vertices - 1) // 3  # Adjust number of edges as needed
+        exact_colors_sum = 0
+        genetic_colors_sum = 0
+
+        for _ in range(num_tests):
+            _, exact_colors, genetic_colors = compare_algorithms(num_vertices, num_edges)
+            exact_colors_sum += exact_colors
+            genetic_colors_sum += genetic_colors
+
+        exact_colors_avg = exact_colors_sum / num_tests
+        genetic_colors_avg = genetic_colors_sum / num_tests
+        ratio = genetic_colors_avg / exact_colors_avg
+        results.append((num_vertices, exact_colors_avg, genetic_colors_avg, ratio))
+
+    df = pd.DataFrame(results, columns=['Vertices', 'Exact Colors', 'Genetic Colors', 'Ratio'])
+    print(df)
+
+    # Plotting the ratio vs vertices size
+    plt.figure()
+    plt.plot(df['Vertices'], df['Ratio'], 'o-', label='Genetic/Exact Ratio')
+    plt.xlabel('Number of Vertices')
+    plt.ylabel('Ratio of Colors (Genetic/Exact)')
+    plt.title('Ratio of Genetic to Exact Coloring vs. Number of Vertices')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+
+
+def create_graph(num_vertices, edges):
+    graph = np.zeros((num_vertices, num_vertices), dtype=int)
+    for edge in edges:
+        u, v = edge
+        graph[u][v] = 1
+        graph[v][u] = 1
+    return graph
+
+if __name__ == "__main__":
+    # Define the number of vertices and edges
+    num_vertices = 4
+    edges = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]
+
+    # Create the graph
+    graph = create_graph(num_vertices, edges)
+
+    # Define the maximum number of colors
+    max_colors = 0
+
+
+    # Run the genetic algorithm to find a valid coloring
+    coloring, num_colors_used = genetic_algorithm(graph, max_colors)
+
+    if coloring is not None:
+        print(f"Number of colors used: {num_colors_used}")
+        print(f"Coloring: {coloring}")
+
+        # Plot the graph with the obtained coloring
+        plot_graph(graph, coloring)
+    else:
+        print("No valid coloring found with the given number of colors.")
